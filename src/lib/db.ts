@@ -26,7 +26,7 @@ export async function dbConnect() {
 
   if (!g.__mongoose!.promise) {
     g.__mongoose!.promise = mongoose.connect(MONGODB_URI, {
-      
+      // add options here if needed
       serverSelectionTimeoutMS: 15000,
     });
   }

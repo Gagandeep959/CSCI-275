@@ -1,0 +1,47 @@
+import { GET } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Doctor", () => ({ Doctor: { find: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Doctor } = require("@/models/Doctor");
+
+function makeLeanResolve(data: any) {
+  return { lean: jest.fn().mockResolvedValue(data) };
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("GET returns mapped doctors list", async () => {
+  const docs = [
+    { _id: "d1", name: "Dr A" },
+    { _id: "d2", name: "Dr B" },
+  ];
+  Doctor.find.mockReturnValueOnce(makeLeanResolve(docs));
+
+  const res: any = await GET();
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Doctor.find).toHaveBeenCalledWith({}, { name: 1 });
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(Array.isArray(body)).toBe(true);
+  expect(body).toEqual([
+    { id: "d1", name: "Dr A" },
+    { id: "d2", name: "Dr B" },
+  ]);
+});
+
+test("GET returns 500 on internal error", async () => {
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  Doctor.find.mockImplementationOnce(() => { throw new Error("boom"); });
+
+  const res: any = await GET();
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to load doctors" });
+
+  errSpy.mockRestore();
+});

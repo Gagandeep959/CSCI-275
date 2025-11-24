@@ -1,0 +1,321 @@
+import { PATCH } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Task", () => ({ Task: { findByIdAndUpdate: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Task } = require("@/models/Task");
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("PATCH updates allowed fields and returns 200 with normalized task", async () => {
+  const id = "t-1";
+  const returnedDoc = {
+    _id: id,
+    title: "New title",
+    description: "Desc",
+    notes: "Notes",
+    status: "open",
+    priority: "high",
+    dueDate: "2025-12-01",
+    patientId: "p1",
+    assignedToEmployeeId: "e1",
+    createdByEmployeeId: "c1",
+    completedByEmployeeId: null,
+    completedAt: null,
+    createdAt: "2025-01-01T00:00:00.000Z",
+    updatedAt: "2025-01-02T00:00:00.000Z",
+  };
+
+  (Task.findByIdAndUpdate as jest.Mock).mockResolvedValueOnce(returnedDoc);
+
+  const req = {
+    json: async () => ({
+      title: "New title",
+      description: "Desc",
+      notes: "Notes",
+      priority: "high",
+      dueDate: "2025-12-01",
+      patientId: "p1",
+      assignedToEmployeeId: "e1",
+      createdByEmployeeId: "c1",
+      // include a disallowed field to ensure it's ignored
+      hacked: "bad",
+    }),
+  } as any;
+
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Task.findByIdAndUpdate).toHaveBeenCalledWith(
+    id,
+    expect.objectContaining({
+      title: "New title",
+      description: "Desc",
+      notes: "Notes",
+      priority: "high",
+      dueDate: "2025-12-01",
+      patientId: "p1",
+      assignedToEmployeeId: "e1",
+      createdByEmployeeId: "c1",
+    }),
+    { new: true, runValidators: true, lean: true }
+  );
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body).toMatchObject({
+    id,
+    title: "New title",
+    description: "Desc",
+    notes: "Notes",
+    status: "open",
+    priority: "high",
+    dueDate: "2025-12-01",
+    patientId: "p1",
+    assignedToEmployeeId: "e1",
+    createdByEmployeeId: "c1",
+  });
+});
+
+test("PATCH auto-stamps completedAt when status set to completed and not provided", async () => {
+  const id = "t-2";
+
+  // Task.findByIdAndUpdate should receive an updates object that includes completedAt
+  (Task.findByIdAndUpdate as jest.Mock).mockImplementationOnce(async (_id: string, updates: any) => {
+    // echo back the updates as if they were saved, include returned _id
+    return { _id: id, ...updates };
+  });
+
+  const req = { json: async () => ({ status: "completed" }) } as any;
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(Task.findByIdAndUpdate).toHaveBeenCalled();
+  const calledUpdates = (Task.findByIdAndUpdate as jest.Mock).mock.calls[0][1];
+  expect(calledUpdates.status).toBe("completed");
+  expect(calledUpdates).toHaveProperty("completedAt");
+  // completedAt should be an ISO string
+  expect(typeof calledUpdates.completedAt).toBe("string");
+  expect(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(calledUpdates.completedAt)).toBe(true);
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body.status).toBe("completed");
+  expect(body.completedAt).toBeTruthy();
+});
+
+test("PATCH ignores disallowed fields in request body", async () => {
+  const id = "t-3";
+  const returnedDoc = { _id: id, title: "OK" };
+  (Task.findByIdAndUpdate as jest.Mock).mockResolvedValueOnce(returnedDoc);
+
+  const req = {
+    json: async () => ({
+      title: "OK",
+      allowThis: "yes", // allowed name not in allowlist — should be ignored
+      __proto__: { admin: true },
+    }),
+  } as any;
+
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  const updates = (Task.findByIdAndUpdate as jest.Mock).mock.calls[0][1];
+  expect(updates).toHaveProperty("title", "OK");
+  // ensure proto/injected fields not present
+  expect(updates).not.toHaveProperty("allowThis");
+  expect(updates).not.toHaveProperty("admin");
+
+  expect(res.status).toBe(200);
+});
+
+test("PATCH returns 404 when task not found", async () => {
+  const id = "missing";
+  (Task.findByIdAndUpdate as jest.Mock).mockResolvedValueOnce(null);
+
+  const req = { json: async () => ({ title: "X" }) } as any;
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(res.status).toBe(404);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Task not found" });
+});
+
+test("PATCH returns 500 on internal exception", async () => {
+  const id = "err";
+  (Task.findByIdAndUpdate as jest.Mock).mockImplementationOnce(() => {
+    throw new Error("boom");
+  });
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const req = { json: async () => ({ title: "X" }) } as any;
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to update task" });
+
+  errSpy.mockRestore();
+});
+```// filepath: c:\Users\gagan\OneDrive\Desktop\main\CSCI-275-main\src\app\api\tasks\[id]\route.test.ts
+import { PATCH } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Task", () => ({ Task: { findByIdAndUpdate: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Task } = require("@/models/Task");
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("PATCH updates allowed fields and returns 200 with normalized task", async () => {
+  const id = "t-1";
+  const returnedDoc = {
+    _id: id,
+    title: "New title",
+    description: "Desc",
+    notes: "Notes",
+    status: "open",
+    priority: "high",
+    dueDate: "2025-12-01",
+    patientId: "p1",
+    assignedToEmployeeId: "e1",
+    createdByEmployeeId: "c1",
+    completedByEmployeeId: null,
+    completedAt: null,
+    createdAt: "2025-01-01T00:00:00.000Z",
+    updatedAt: "2025-01-02T00:00:00.000Z",
+  };
+
+  (Task.findByIdAndUpdate as jest.Mock).mockResolvedValueOnce(returnedDoc);
+
+  const req = {
+    json: async () => ({
+      title: "New title",
+      description: "Desc",
+      notes: "Notes",
+      priority: "high",
+      dueDate: "2025-12-01",
+      patientId: "p1",
+      assignedToEmployeeId: "e1",
+      createdByEmployeeId: "c1",
+      // include a disallowed field to ensure it's ignored
+      hacked: "bad",
+    }),
+  } as any;
+
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Task.findByIdAndUpdate).toHaveBeenCalledWith(
+    id,
+    expect.objectContaining({
+      title: "New title",
+      description: "Desc",
+      notes: "Notes",
+      priority: "high",
+      dueDate: "2025-12-01",
+      patientId: "p1",
+      assignedToEmployeeId: "e1",
+      createdByEmployeeId: "c1",
+    }),
+    { new: true, runValidators: true, lean: true }
+  );
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body).toMatchObject({
+    id,
+    title: "New title",
+    description: "Desc",
+    notes: "Notes",
+    status: "open",
+    priority: "high",
+    dueDate: "2025-12-01",
+    patientId: "p1",
+    assignedToEmployeeId: "e1",
+    createdByEmployeeId: "c1",
+  });
+});
+
+test("PATCH auto-stamps completedAt when status set to completed and not provided", async () => {
+  const id = "t-2";
+
+  // Task.findByIdAndUpdate should receive an updates object that includes completedAt
+  (Task.findByIdAndUpdate as jest.Mock).mockImplementationOnce(async (_id: string, updates: any) => {
+    // echo back the updates as if they were saved, include returned _id
+    return { _id: id, ...updates };
+  });
+
+  const req = { json: async () => ({ status: "completed" }) } as any;
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(Task.findByIdAndUpdate).toHaveBeenCalled();
+  const calledUpdates = (Task.findByIdAndUpdate as jest.Mock).mock.calls[0][1];
+  expect(calledUpdates.status).toBe("completed");
+  expect(calledUpdates).toHaveProperty("completedAt");
+  // completedAt should be an ISO string
+  expect(typeof calledUpdates.completedAt).toBe("string");
+  expect(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(calledUpdates.completedAt)).toBe(true);
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body.status).toBe("completed");
+  expect(body.completedAt).toBeTruthy();
+});
+
+test("PATCH ignores disallowed fields in request body", async () => {
+  const id = "t-3";
+  const returnedDoc = { _id: id, title: "OK" };
+  (Task.findByIdAndUpdate as jest.Mock).mockResolvedValueOnce(returnedDoc);
+
+  const req = {
+    json: async () => ({
+      title: "OK",
+      allowThis: "yes", // allowed name not in allowlist — should be ignored
+      __proto__: { admin: true },
+    }),
+  } as any;
+
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  const updates = (Task.findByIdAndUpdate as jest.Mock).mock.calls[0][1];
+  expect(updates).toHaveProperty("title", "OK");
+  // ensure proto/injected fields not present
+  expect(updates).not.toHaveProperty("allowThis");
+  expect(updates).not.toHaveProperty("admin");
+
+  expect(res.status).toBe(200);
+});
+
+test("PATCH returns 404 when task not found", async () => {
+  const id = "missing";
+  (Task.findByIdAndUpdate as jest.Mock).mockResolvedValueOnce(null);
+
+  const req = { json: async () => ({ title: "X" }) } as any;
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(res.status).toBe(404);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Task not found" });
+});
+
+test("PATCH returns 500 on internal exception", async () => {
+  const id = "err";
+  (Task.findByIdAndUpdate as jest.Mock).mockImplementationOnce(() => {
+    throw new Error("boom");
+  });
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const req = { json: async () => ({ title: "X" }) } as any;
+  const res: any = await PATCH(req as any, { params: { id } } as unknown);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to update task" });
+
+  errSpy.mockRestore();
+});

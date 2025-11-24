@@ -1,0 +1,150 @@
+import React from "react";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import TasksPage from "./page";
+
+// mock useTasks and useRole
+jest.mock("@/context/TaskContext", () => ({ useTasks: jest.fn() }));
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+const { useTasks } = require("@/context/TaskContext") as { useTasks: jest.Mock };
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+// helper to find an input/select/textarea by nearby label text (labels are plain elements)
+function getControlByLabel(labelText: string) {
+  const label = screen.getByText(labelText);
+  const container = label.closest("div") || label.parentElement;
+  if (!container) throw new Error(`Label container for "${labelText}" not found`);
+  const control = container.querySelector("input, textarea, select, button");
+  if (!control) throw new Error(`Control for label "${labelText}" not found`);
+  return control as HTMLElement;
+}
+
+test("shows loading and error states from useTasks", () => {
+  useRole.mockReturnValue({ role: "doctor" });
+  useTasks.mockReturnValue({
+    tasks: [],
+    loading: true,
+    error: null,
+    createTask: jest.fn(),
+    completeTask: jest.fn(),
+  });
+
+  render(<TasksPage />);
+  expect(screen.getByText("Loading…")).toBeInTheDocument();
+
+  // now render with error
+  cleanup();
+  useTasks.mockReturnValue({
+    tasks: [],
+    loading: false,
+    error: "something went wrong",
+    createTask: jest.fn(),
+    completeTask: jest.fn(),
+  });
+  render(<TasksPage />);
+  expect(screen.getByText("something went wrong")).toBeInTheDocument();
+});
+
+test("create form visible for roles that canCreate and Add task calls createTask then clears inputs", async () => {
+  const createTask = jest.fn().mockResolvedValue(undefined);
+  useRole.mockReturnValue({ role: "doctor" }); // canCreate = true
+  useTasks.mockReturnValue({
+    tasks: [],
+    loading: false,
+    error: null,
+    createTask,
+    completeTask: jest.fn(),
+  });
+
+  render(<TasksPage />);
+
+  // form controls present
+  const titleInput = getControlByLabel("Title") as HTMLInputElement;
+  const descTextarea = getControlByLabel("Description") as HTMLTextAreaElement;
+  const dueInput = getControlByLabel("Due date") as HTMLInputElement;
+  const forSelect = getControlByLabel("For") as HTMLSelectElement;
+  const patientInput = getControlByLabel("Patient ID (optional)") as HTMLInputElement;
+  const notesInput = getControlByLabel("Notes (optional)") as HTMLInputElement;
+
+  // fill values
+  fireEvent.change(titleInput, { target: { value: "My Task" } });
+  fireEvent.change(descTextarea, { target: { value: "Details" } });
+  fireEvent.change(dueInput, { target: { value: "2025-12-31" } });
+  fireEvent.change(forSelect, { target: { value: "doctor" } });
+  fireEvent.change(patientInput, { target: { value: "pat-1" } });
+  fireEvent.change(notesInput, { target: { value: "Note1" } });
+
+  // click Add task
+  fireEvent.click(screen.getByRole("button", { name: /Add task/i }));
+
+  await waitFor(() => expect(createTask).toHaveBeenCalled());
+
+  // verify payload shape and values
+  const arg = createTask.mock.calls[0][0];
+  expect(arg.title).toBe("My Task");
+  expect(arg.description).toBe("Details");
+  expect(arg.forType).toBe("doctor");
+  expect(arg.notes).toBe("Note1");
+  expect(arg.patientId).toBe("pat-1");
+  expect(arg.dueDate instanceof Date).toBe(true);
+  expect(arg.dueDate.toISOString().slice(0, 10)).toBe("2025-12-31");
+
+  // inputs cleared after create
+  expect(titleInput.value).toBe("");
+  expect(descTextarea.value).toBe("");
+  expect(notesInput.value).toBe("");
+  expect(patientInput.value).toBe("");
+});
+
+test("openCount displays number of open tasks and Mark complete calls completeTask when allowed", async () => {
+  const completeTask = jest.fn();
+  const tasks = [
+    { id: "t1", title: "T1", description: "d", forType: "reception", dueDate: new Date().toISOString(), createdBy: "A", createdByRole: "doctor", completed: false },
+    { id: "t2", title: "T2", description: "d2", forType: "doctor", dueDate: new Date().toISOString(), createdBy: "B", createdByRole: "receptionist", completed: true },
+  ];
+
+  useRole.mockReturnValue({ role: "doctor" }); // canComplete = true
+  useTasks.mockReturnValue({
+    tasks,
+    loading: false,
+    error: null,
+    createTask: jest.fn(),
+    completeTask,
+  });
+
+  render(<TasksPage />);
+
+  // openCount should be 1 (only one not completed)
+  expect(screen.getByText("1")).toBeInTheDocument();
+
+  // Mark complete button for first task should be present
+  const markBtn = screen.getByRole("button", { name: /Mark complete/i });
+  fireEvent.click(markBtn);
+
+  expect(completeTask).toHaveBeenCalledWith("t1");
+});
+
+test("no create form for roles that cannot create tasks", () => {
+  useRole.mockReturnValue({ role: "receptionist" }); // cannot create
+  useTasks.mockReturnValue({
+    tasks: [],
+    loading: false,
+    error: null,
+    createTask: jest.fn(),
+    completeTask: jest.fn(),
+  });
+
+  render(<TasksPage />);
+
+  // Add task button shouldn't be present
+  expect(screen.queryByRole("button", { name: /Add task/i })).not.toBeInTheDocument();
+});

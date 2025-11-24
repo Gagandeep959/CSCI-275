@@ -1,0 +1,91 @@
+import { POST } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/User", () => ({ User: { findOne: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { User } = require("@/models/User");
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("POST returns 200 and user payload on successful login", async () => {
+  const mockUser = {
+    _id: "uid123",
+    name: "Test User",
+    email: "test@example.com",
+    role: "doctor",
+    employeeId: "EMP-1",
+    password: "password123",
+  };
+  User.findOne.mockReturnValueOnce({
+    lean: jest.fn().mockResolvedValue(mockUser),
+  });
+  (dbConnect as jest.Mock).mockResolvedValue(undefined);
+
+  const req = { json: async () => ({ email: "test@example.com", password: "password123" }) } as any;
+  const res: any = await POST(req);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(User.findOne).toHaveBeenCalledWith({ email: "test@example.com" });
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body).toEqual({
+    id: String(mockUser._id),
+    name: mockUser.name,
+    email: mockUser.email,
+    role: mockUser.role,
+    employeeId: mockUser.employeeId,
+  });
+});
+
+test("POST returns 401 when user not found or password missing", async () => {
+  User.findOne.mockReturnValueOnce({
+    lean: jest.fn().mockResolvedValue(null),
+  });
+  (dbConnect as jest.Mock).mockResolvedValue(undefined);
+
+  const req = { json: async () => ({ email: "nope@example.com", password: "whatever" }) } as any;
+  const res: any = await POST(req);
+
+  expect(res.status).toBe(401);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Invalid email or password" });
+});
+
+test("POST returns 401 when password does not match", async () => {
+  const mockUser = {
+    _id: "uid123",
+    email: "test@example.com",
+    role: "receptionist",
+    password: "rightpass",
+  };
+  User.findOne.mockReturnValueOnce({
+    lean: jest.fn().mockResolvedValue(mockUser),
+  });
+  (dbConnect as jest.Mock).mockResolvedValue(undefined);
+
+  const req = { json: async () => ({ email: "test@example.com", password: "wrong" }) } as any;
+  const res: any = await POST(req);
+
+  expect(res.status).toBe(401);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Invalid email or password" });
+});
+
+test("POST returns 500 on internal exception", async () => {
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  (dbConnect as jest.Mock).mockImplementationOnce(() => Promise.resolve());
+  User.findOne.mockImplementationOnce(() => { throw new Error("db error"); });
+
+  const req = { json: async () => ({ email: "x", password: "y" }) } as any;
+  const res: any = await POST(req);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Login failed" });
+
+  errSpy.mockRestore();
+});

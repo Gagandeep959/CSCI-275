@@ -1,0 +1,58 @@
+import { DELETE } from "./route";
+
+// mock db and model
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Appointment", () => ({ Appointment: { findByIdAndDelete: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Appointment } = require("@/models/Appointment");
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("DELETE returns 200 and deletedId when appointment existed", async () => {
+  const id = "abc123";
+  Appointment.findByIdAndDelete.mockResolvedValueOnce({ _id: id, date: "2025-01-01" });
+
+  const res: any = await DELETE(undefined as any, { params: { id } } as unknown);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Appointment.findByIdAndDelete).toHaveBeenCalledWith(id);
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body).toEqual({ ok: true, deletedId: id });
+});
+
+test("DELETE returns 404 when appointment not found", async () => {
+  const id = "missing";
+  Appointment.findByIdAndDelete.mockResolvedValueOnce(null);
+
+  const res: any = await DELETE(undefined as any, { params: { id } } as unknown);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Appointment.findByIdAndDelete).toHaveBeenCalledWith(id);
+
+  expect(res.status).toBe(404);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Appointment not found" });
+});
+
+test("DELETE returns 500 on exception", async () => {
+  const id = "err";
+  Appointment.findByIdAndDelete.mockImplementationOnce(() => { throw new Error("boom"); });
+  // suppress console.error in test output
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const res: any = await DELETE(undefined as any, { params: { id } } as unknown);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Appointment.findByIdAndDelete).toHaveBeenCalledWith(id);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to delete appointment" });
+
+  errSpy.mockRestore();
+});

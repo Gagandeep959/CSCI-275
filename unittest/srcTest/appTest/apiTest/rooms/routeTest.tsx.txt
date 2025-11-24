@@ -1,0 +1,75 @@
+import { GET, POST } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Room", () => ({ Room: { find: jest.fn(), create: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Room } = require("@/models/Room");
+
+function makeLeanResolve(data: any) {
+  return { lean: jest.fn().mockResolvedValue(data) };
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("GET returns mapped rooms list", async () => {
+  const docs = [
+    { _id: "r1", name: "Exam 1", code: "R-101" },
+    { _id: "r2", name: "Consult", code: undefined },
+  ];
+  Room.find.mockReturnValueOnce(makeLeanResolve(docs));
+
+  const res: any = await GET();
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Room.find).toHaveBeenCalledWith({}, { name: 1, code: 1 });
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body).toEqual([
+    { id: "r1", name: "Exam 1", code: "R-101" },
+    { id: "r2", name: "Consult", code: undefined },
+  ]);
+});
+
+test("GET returns 500 on internal error", async () => {
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  Room.find.mockImplementationOnce(() => { throw new Error("boom"); });
+
+  const res: any = await GET();
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to load rooms" });
+
+  errSpy.mockRestore();
+});
+
+test("POST creates a room and returns 201", async () => {
+  const created = { _id: "newid", name: "New Room", code: "NR-1" };
+  Room.create.mockResolvedValueOnce(created);
+
+  const req = { json: async () => ({ name: "New Room", code: "NR-1" }) } as any;
+  const res: any = await POST(req);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Room.create).toHaveBeenCalledWith({ name: "New Room", code: "NR-1" });
+
+  expect(res.status).toBe(201);
+  const body = await res.json();
+  expect(body).toEqual({ id: "newid", name: "New Room", code: "NR-1" });
+});
+
+test("POST returns 500 on create error", async () => {
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  Room.create.mockImplementationOnce(() => { throw new Error("db fail"); });
+
+  const req = { json: async () => ({ name: "X" }) } as any;
+  const res: any = await POST(req);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to create room" });
+
+  errSpy.mockRestore();
+});

@@ -1,0 +1,45 @@
+import { GET } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/User", () => ({ User: { deleteMany: jest.fn(), insertMany: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { User } = require("@/models/User");
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("GET seeds users: clears existing users and inserts seeds, returns ok and users", async () => {
+  const seeded = [
+    { _id: "u1", name: "Mazda", email: "manager@example.com" },
+    { _id: "u2", name: "Jay", email: "reception@example.com" },
+    { _id: "u3", name: "Fred", email: "doctor@example.com" },
+  ];
+
+  (dbConnect as jest.Mock).mockResolvedValue(undefined);
+  (User.deleteMany as jest.Mock).mockResolvedValue({});
+  (User.insertMany as jest.Mock).mockResolvedValue(seeded);
+
+  const res: any = await GET();
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(User.deleteMany).toHaveBeenCalledWith({});
+  expect(User.insertMany).toHaveBeenCalled();
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body).toHaveProperty("ok", true);
+  expect(body).toHaveProperty("users", seeded);
+});
+
+test("GET rejects when insertMany fails", async () => {
+  (dbConnect as jest.Mock).mockResolvedValue(undefined);
+  (User.deleteMany as jest.Mock).mockResolvedValue({});
+  (User.insertMany as jest.Mock).mockRejectedValue(new Error("insert failed"));
+
+  await expect(GET()).rejects.toThrow("insert failed");
+
+  expect(User.deleteMany).toHaveBeenCalledWith({});
+  expect(User.insertMany).toHaveBeenCalled();
+});

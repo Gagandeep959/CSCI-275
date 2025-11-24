@@ -1,0 +1,163 @@
+import { GET, POST } from "./route";
+
+// mocks
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Task", () => ({ Task: { find: jest.fn(), create: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Task } = require("@/models/Task");
+
+function makeSortResolve(data: any) {
+  return {
+    sort: jest.fn().mockReturnValue({
+      lean: jest.fn().mockResolvedValue(data),
+    }),
+  };
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("GET returns mapped tasks list", async () => {
+  const tasks = [
+    {
+      _id: "t1",
+      title: "T1",
+      description: "Desc1",
+      patientId: "p1",
+      notes: "N1",
+      forType: "reception",
+      createdBy: "Alice",
+      createdByRole: "receptionist",
+      dueDate: "2025-12-01",
+      completed: false,
+      completedByEmployeeId: null,
+      completedAt: null,
+    },
+    {
+      _id: "t2",
+      title: "T2",
+      description: "Desc2",
+      patientId: undefined,
+      notes: undefined,
+      forType: "doctor",
+      createdBy: "Dr",
+      createdByRole: "doctor",
+      dueDate: "2025-12-02",
+      completed: true,
+      completedByEmployeeId: "e1",
+      completedAt: "2025-01-01T00:00:00.000Z",
+    },
+  ];
+
+  Task.find.mockReturnValueOnce(makeSortResolve(tasks));
+
+  const res: any = await GET();
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Task.find).toHaveBeenCalledWith({});
+  expect(res.status).toBe(200);
+
+  const body = await res.json();
+  expect(Array.isArray(body)).toBe(true);
+  expect(body[0]).toMatchObject({
+    id: "t1",
+    title: "T1",
+    description: "Desc1",
+    patientId: "p1",
+    notes: "N1",
+    forType: "reception",
+    createdBy: "Alice",
+    createdByRole: "receptionist",
+    dueDate: "2025-12-01",
+    completed: false,
+    completedByEmployeeId: null,
+    completedAt: null,
+  });
+  expect(body[1].completed).toBe(true);
+});
+
+test("GET returns 500 on internal error", async () => {
+  Task.find.mockImplementationOnce(() => {
+    throw new Error("db fail");
+  });
+  const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const res: any = await GET();
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to load tasks" });
+
+  spy.mockRestore();
+});
+
+test("POST returns 400 when required fields missing", async () => {
+  const req = { json: async () => ({}) } as any;
+  const res: any = await POST(req);
+  expect(res.status).toBe(400);
+  const body = await res.json();
+  expect(body).toEqual({
+    error: "title, description, forType, dueDate are required",
+  });
+});
+
+test("POST creates a task and returns 201", async () => {
+  const created = { _id: "new-t" };
+  Task.create.mockResolvedValueOnce(created);
+
+  const payload = {
+    title: "New Task",
+    description: "Do stuff",
+    forType: "doctor",
+    dueDate: "2025-12-10",
+    patientId: "p1",
+    notes: "note",
+    createdBy: "User A",
+    createdByRole: "doctor",
+  };
+  const req = { json: async () => payload } as any;
+
+  const res: any = await POST(req);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Task.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: payload.title,
+      description: payload.description,
+      forType: payload.forType,
+      dueDate: expect.any(Date),
+      patientId: payload.patientId,
+      notes: payload.notes,
+      createdBy: payload.createdBy,
+      createdByRole: payload.createdByRole,
+      completed: false,
+    })
+  );
+
+  expect(res.status).toBe(201);
+  const body = await res.json();
+  expect(body).toEqual({ id: "new-t" });
+});
+
+test("POST returns 500 on internal exception", async () => {
+  Task.create.mockImplementationOnce(() => {
+    throw new Error("boom");
+  });
+  const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const payload = {
+    title: "X",
+    description: "Y",
+    forType: "doctor",
+    dueDate: "2025-12-10",
+  };
+  const req = { json: async () => payload } as any;
+  const res: any = await POST(req);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to create task" });
+
+  spy.mockRestore();
+});

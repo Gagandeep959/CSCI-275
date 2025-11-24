@@ -1,0 +1,89 @@
+import { GET } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Patient", () => ({ Patient: { find: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Patient } = require("@/models/Patient");
+
+function makeLeanResolve(data: any) {
+  return { lean: jest.fn().mockResolvedValue(data) };
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("GET returns mapped patients with normalized fields when no search", async () => {
+  const docs = [
+    { _id: "p1", firstName: "Alice", lastName: "Smith", phone: "123", email: "a@x.com", notes: "n" },
+    { _id: "p2", notes: "long note" }, // missing names -> (no name)
+  ];
+  Patient.find.mockReturnValueOnce(makeLeanResolve(docs));
+
+  const req: any = { url: "http://localhost/api/patients" };
+  const res: any = await GET(req);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(Patient.find).toHaveBeenCalledWith(
+    {},
+    {
+      firstName: 1,
+      lastName: 1,
+      phone: 1,
+      healthNumber: 1,
+      email: 1,
+      notes: 1,
+    }
+  );
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(Array.isArray(body)).toBe(true);
+
+  expect(body[0]).toMatchObject({
+    id: "p1",
+    firstName: "Alice",
+    lastName: "Smith",
+    fullName: "Alice Smith",
+    phone: "123",
+    email: "a@x.com",
+    notes: "n",
+  });
+
+  expect(body[1].fullName).toBe("(no name)");
+  expect(body[1].firstName).toBe("");
+  expect(body[1].lastName).toBe("");
+});
+
+test("GET uses regex filter when search param length >= 2", async () => {
+  Patient.find.mockReturnValueOnce(makeLeanResolve([]));
+
+  const req: any = { url: "http://localhost/api/patients?search=Al" };
+  await GET(req);
+
+  expect(Patient.find).toHaveBeenCalled();
+  const filterArg = Patient.find.mock.calls[0][0];
+  expect(filterArg).toHaveProperty("$or");
+  expect(Array.isArray(filterArg.$or)).toBe(true);
+  // ensure regex was built (at least one entry)
+  expect(filterArg.$or.length).toBeGreaterThanOrEqual(1);
+  // projection should still be passed as second arg
+  const projArg = Patient.find.mock.calls[0][1];
+  expect(projArg).toHaveProperty("email", 1);
+  expect(projArg).toHaveProperty("notes", 1);
+});
+
+test("GET returns 500 and error body on internal exception", async () => {
+  Patient.find.mockImplementationOnce(() => { throw new Error("db exploded"); });
+  const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const req: any = { url: "http://localhost/api/patients" };
+  const res: any = await GET(req);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to load patients" });
+
+  errSpy.mockRestore();
+});

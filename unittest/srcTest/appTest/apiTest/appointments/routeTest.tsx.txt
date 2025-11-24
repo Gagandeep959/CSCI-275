@@ -1,0 +1,148 @@
+import { GET, POST } from "./route";
+
+// mocks
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Appointment", () => ({
+  Appointment: {
+    find: jest.fn(),
+    create: jest.fn(),
+  },
+}));
+jest.mock("@/models/Patient", () => ({
+  Patient: {
+    find: jest.fn(),
+    findById: jest.fn(),
+  },
+}));
+
+const { dbConnect } = require("@/lib/db");
+const { Appointment } = require("@/models/Appointment");
+const { Patient } = require("@/models/Patient");
+
+function makeLeanResolve(data: any) {
+  return { lean: jest.fn().mockResolvedValue(data) };
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("GET returns appointment list with patient names when patients present", async () => {
+  const appts = [
+    { _id: "a1", date: "2025-01-01", time: "09:00", doctorId: "d1", roomId: "r1", patientId: "p1", status: "scheduled", notes: "n" },
+    { _id: "a2", date: "2025-01-02", time: "10:00", doctorId: "d2", roomId: "r2", status: "scheduled" },
+  ];
+  const patients = [{ _id: "p1", firstName: "Alice", lastName: "Smith" }];
+
+  Appointment.find.mockReturnValueOnce(makeLeanResolve(appts));
+  Patient.find.mockReturnValueOnce(makeLeanResolve(patients));
+
+  const res: any = await GET();
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(Array.isArray(body)).toBe(true);
+  // first item mapped and patientName resolved
+  expect(body[0]).toMatchObject({
+    id: "a1",
+    patientName: "Alice Smith",
+    notes: "n",
+  });
+  // second item without patientId still present
+  expect(body[1]).toMatchObject({ id: "a2", patientName: undefined });
+});
+
+test("GET returns 500 on internal error", async () => {
+  Appointment.find.mockImplementationOnce(() => { throw new Error("db fail"); });
+  // suppress console.error output in test
+  const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const res: any = await GET();
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to load appointments" });
+
+  spy.mockRestore();
+});
+
+test("POST returns 400 when required fields are missing", async () => {
+  const req = { json: async () => ({}) } as any;
+  const res: any = await POST(req);
+  expect(res.status).toBe(400);
+  const body = await res.json();
+  expect(body).toHaveProperty("error", "Missing required fields (patient, date, time, doctor, room)");
+});
+
+test("POST returns 404 when patient not found", async () => {
+  const payload = { patientId: "pX", date: "2025-01-01", time: "09:00", doctorId: "d1", roomId: "r1" };
+  Patient.findById.mockReturnValueOnce(makeLeanResolve(null));
+
+  const req = { json: async () => payload } as any;
+  const res: any = await POST(req);
+  expect(res.status).toBe(404);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Patient not found" });
+});
+
+test("POST returns 409 on conflicting appointment (patient/doctor/room overlap)", async () => {
+  const payload = { patientId: "p1", date: "2025-01-01", time: "09:00", doctorId: "d1", roomId: "r1" };
+  // patient exists
+  Patient.findById.mockReturnValueOnce(makeLeanResolve({ _id: "p1", firstName: "A", lastName: "B" }));
+  // sameDay returns an appointment that overlaps by time (09:15 vs 09:00 -> diff 15 < 30)
+  const existing = [{ _id: "e1", time: "09:15", patientId: "p1", doctorId: "dX", roomId: "rX" }];
+  Appointment.find.mockReturnValueOnce(makeLeanResolve(existing));
+
+  const req = { json: async () => payload } as any;
+  const res: any = await POST(req);
+  expect(res.status).toBe(409);
+  const body = await res.json();
+  expect(body).toHaveProperty("error", "Conflicting appointment (patient/doctor/room already booked).");
+});
+
+test("POST creates appointment and returns 201 with created object", async () => {
+  const payload = { patientId: "p1", date: "2025-01-01", time: "09:00", doctorId: "d1", roomId: "r1", createdByEmployeeId: "emp1" };
+  // patient exists
+  Patient.findById.mockReturnValueOnce(makeLeanResolve({ _id: "p1", firstName: "Alice", lastName: "Smith" }));
+  // no same-day conflicts
+  Appointment.find.mockReturnValueOnce(makeLeanResolve([]));
+  // create returns created doc
+  Appointment.create.mockResolvedValueOnce({
+    _id: "newid",
+    patientId: "p1",
+    patientName: "Alice Smith",
+    date: "2025-01-01",
+    time: "09:00",
+    doctorId: "d1",
+    roomId: "r1",
+    notes: "",
+    status: "scheduled",
+  });
+
+  const req = { json: async () => payload } as any;
+  const res: any = await POST(req);
+  expect(res.status).toBe(201);
+  const body = await res.json();
+  expect(body).toMatchObject({
+    id: "newid",
+    patientId: "p1",
+    patientName: "Alice Smith",
+    date: "2025-01-01",
+    time: "09:00",
+    doctorId: "d1",
+    roomId: "r1",
+  });
+});
+
+test("POST returns 500 on internal error", async () => {
+  const payload = { patientId: "p1", date: "2025-01-01", time: "09:00", doctorId: "d1", roomId: "r1" };
+  Patient.findById.mockReturnValueOnce(makeLeanResolve({ _id: "p1", firstName: "A", lastName: "B" }));
+  Appointment.find.mockImplementationOnce(() => { throw new Error("boom"); });
+  const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  const req = { json: async () => payload } as any;
+  const res: any = await POST(req);
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to create appointment" });
+
+  spy.mockRestore();
+});

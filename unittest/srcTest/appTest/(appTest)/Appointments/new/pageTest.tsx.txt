@@ -1,0 +1,242 @@
+import React from "react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  cleanup,
+} from "@testing-library/react";
+import "@testing-library/jest-dom";
+import NewAppointmentPage from "./page";
+
+// mock useRole
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+
+// mock next/router useRouter
+jest.mock("next/navigation", () => ({ useRouter: jest.fn() }));
+const { useRouter } = require("next/navigation") as { useRouter: jest.Mock };
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+function makeFetchMock() {
+  return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init && init.method) || "GET";
+
+    // reference data load
+    if (url.endsWith("/api/doctors") && method === "GET") {
+      return {
+        ok: true,
+        json: async () => [
+          { id: "d1", name: "Dr One" },
+          { id: "d2", name: "Dr Two" },
+        ],
+      };
+    }
+    if (url.endsWith("/api/rooms") && method === "GET") {
+      return {
+        ok: true,
+        json: async () => [
+          { id: "r1", name: "Room 1", code: "R-101" },
+          { id: "r2", name: "Room 2", code: "R-102" },
+        ],
+      };
+    }
+
+    // patient search
+    if (url.startsWith("/api/patients") && method === "GET") {
+      return {
+        ok: true,
+        json: async () => [
+          { id: "p1", firstName: "Alice", lastName: "Smith", phone: "111" },
+          { id: "p2", firstName: "Al", lastName: "Jones", healthNumber: "HN-2" },
+        ],
+      };
+    }
+
+    // create appointment
+    if (url.endsWith("/api/appointments") && method === "POST") {
+      // default success; tests may override global.fetch for other behaviors
+      return { ok: true, status: 200, json: async () => ({ id: "a-new" }) };
+    }
+
+    return { ok: false, status: 404, json: async () => ({}) };
+  });
+}
+
+// helper to find input/select/textarea near a label text (labels are not linked via for=)
+function getControlByLabel(labelText: string) {
+  const label = screen.getByText(labelText);
+  const parent = label.closest("div") || label.parentElement;
+  if (!parent) throw new Error("label parent not found");
+  const control = parent.querySelector("input, select, textarea, button");
+  if (!control) throw new Error(`control for label "${labelText}" not found`);
+  return control as HTMLElement;
+}
+
+test("loads doctors and rooms and populates selects", async () => {
+  useRole.mockReturnValue({ employeeId: "EMP-1" });
+  const push = jest.fn();
+  useRouter.mockReturnValue({ push });
+
+  (global as any).fetch = makeFetchMock();
+
+  render(<NewAppointmentPage />);
+
+  // Wait for doctor/room options to be rendered
+  await waitFor(() => expect(screen.getByText("Dr One")).toBeInTheDocument());
+  expect(screen.getByText("Room 1")).toBeInTheDocument();
+});
+
+test("patient search debounced shows results and picking a patient fills selection", async () => {
+  useRole.mockReturnValue({ employeeId: "EMP-1" });
+  useRouter.mockReturnValue({ push: jest.fn() });
+
+  const fetchMock = makeFetchMock();
+  (global as any).fetch = fetchMock;
+
+  jest.useFakeTimers();
+
+  render(<NewAppointmentPage />);
+
+  // find patient input (label "Patient")
+  const patientInput = getControlByLabel("Patient") as HTMLInputElement;
+  fireEvent.change(patientInput, { target: { value: "Al" } });
+
+  // advance past debounce (250ms)
+  jest.advanceTimersByTime(300);
+
+  // ensure fetch called for patients
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/patients?search=Al"),
+      expect.anything()
+    );
+  });
+
+  // patient results should render as buttons; click the first
+  await waitFor(() => expect(screen.getByText("Alice Smith")).toBeInTheDocument());
+  const firstResult = screen.getByText("Alice Smith").closest("button")!;
+  fireEvent.click(firstResult);
+
+  // selected name shown
+  expect(screen.getByText(/Selected:/)).toHaveTextContent("Selected: Alice Smith");
+
+  jest.useRealTimers();
+});
+
+test("form validation and successful submit calls API and navigates", async () => {
+  useRole.mockReturnValue({ employeeId: "EMP-1" });
+  const push = jest.fn();
+  useRouter.mockReturnValue({ push });
+
+  const fetchMock = makeFetchMock();
+  (global as any).fetch = fetchMock;
+
+  // render and wait for selects to populate
+  render(<NewAppointmentPage />);
+  await waitFor(() => expect(screen.getByText("Dr One")).toBeInTheDocument());
+
+  // pick patient by stubbing patient results and clicking via same UI path:
+  // directly set patientQuery input and mock patients response by reusing fetchMock
+  jest.useFakeTimers();
+  const patientInput = getControlByLabel("Patient") as HTMLInputElement;
+  fireEvent.change(patientInput, { target: { value: "Al" } });
+  jest.advanceTimersByTime(300);
+  await waitFor(() => expect(screen.getByText("Alice Smith")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Alice Smith").closest("button")!);
+  jest.useRealTimers();
+
+  // fill date/time
+  const dateInput = getControlByLabel("Date") as HTMLInputElement;
+  const timeInput = getControlByLabel("Time") as HTMLInputElement;
+  fireEvent.change(dateInput, { target: { value: "2025-12-01" } });
+  fireEvent.change(timeInput, { target: { value: "09:00" } });
+
+  // select doctor and room
+  const doctorSelect = getControlByLabel("Doctor") as HTMLSelectElement;
+  const roomSelect = getControlByLabel("Room") as HTMLSelectElement;
+  fireEvent.change(doctorSelect, { target: { value: "d1" } });
+  fireEvent.change(roomSelect, { target: { value: "r1" } });
+
+  // notes
+  const notesTextarea = screen.getByRole("textbox", { name: /Notes/i }) || screen.getByLabelText?.("Notes");
+  // fallback: find textarea in Notes parent
+  if (!notesTextarea) {
+    const notesControl = getControlByLabel("Notes") as HTMLTextAreaElement;
+    fireEvent.change(notesControl, { target: { value: "Checkup" } });
+  } else {
+    fireEvent.change(notesTextarea as HTMLElement, { target: { value: "Checkup" } });
+  }
+
+  // submit button should be enabled now
+  const submitBtn = screen.getByRole("button", { name: /Create appointment/i }) as HTMLButtonElement;
+  expect(submitBtn).toBeEnabled();
+
+  // click submit and expect POST and navigation
+  fireEvent.click(submitBtn);
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/appointments"),
+      expect.objectContaining({ method: "POST", headers: { "Content-Type": "application/json" } })
+    )
+  );
+
+  // navigation
+  await waitFor(() => expect(push).toHaveBeenCalledWith("/appointments/all"));
+});
+
+test("handles 409 conflict response by showing alert and not navigating", async () => {
+  useRole.mockReturnValue({ employeeId: "EMP-1" });
+  const push = jest.fn();
+  useRouter.mockReturnValue({ push });
+
+  // custom fetch mock: load doctors/rooms, but POST returns 409
+  const fetchMock = makeFetchMock();
+  (global as any).fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init && init.method) || "GET";
+    if (url.endsWith("/api/appointments") && method === "POST") {
+      return { ok: false, status: 409, json: async () => ({ error: "conflict" }) };
+    }
+    return fetchMock(input, init);
+  }) as any;
+
+  // spy alert
+  const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+
+  render(<NewAppointmentPage />);
+  await waitFor(() => expect(screen.getByText("Dr One")).toBeInTheDocument());
+
+  // pick patient quickly by directly setting state via UI path
+  jest.useFakeTimers();
+  const patientInput = getControlByLabel("Patient") as HTMLInputElement;
+  fireEvent.change(patientInput, { target: { value: "Al" } });
+  jest.advanceTimersByTime(300);
+  await waitFor(() => expect(screen.getByText("Alice Smith")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Alice Smith").closest("button")!);
+  jest.useRealTimers();
+
+  // fill required fields
+  fireEvent.change(getControlByLabel("Date") as HTMLInputElement, { target: { value: "2025-12-01" } });
+  fireEvent.change(getControlByLabel("Time") as HTMLInputElement, { target: { value: "09:00" } });
+  fireEvent.change(getControlByLabel("Doctor") as HTMLSelectElement, { target: { value: "d1" } });
+  fireEvent.change(getControlByLabel("Room") as HTMLSelectElement, { target: { value: "r1" } });
+
+  // submit
+  fireEvent.click(screen.getByRole("button", { name: /Create appointment/i }));
+
+  await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("conflict"));
+  expect(push).not.toHaveBeenCalled();
+
+  alertSpy.mockRestore();
+});

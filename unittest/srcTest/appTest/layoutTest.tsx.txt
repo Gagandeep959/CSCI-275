@@ -1,0 +1,98 @@
+import React from "react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import AppLayout from "./layout";
+
+// mock next/navigation hooks
+jest.mock("next/navigation", () => ({
+  usePathname: jest.fn(),
+  useRouter: jest.fn(),
+}));
+const { usePathname, useRouter } = require("next/navigation") as {
+  usePathname: jest.Mock;
+  useRouter: jest.Mock;
+};
+
+// mock role and task contexts
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+jest.mock("@/context/TaskContext", () => ({
+  TaskProvider: ({ children }: any) => children,
+  useTasks: jest.fn(),
+}));
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+const { useTasks } = require("@/context/TaskContext") as { useTasks: jest.Mock };
+
+// mock AssistantChat component (if present)
+jest.mock("@/components/AssistantChat", () => () => <div data-testid="chatbot" />);
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+test("redirects to /login when no user", () => {
+  const replace = jest.fn();
+  useRole.mockReturnValue({ user: null, role: null, logout: jest.fn() });
+  useRouter.mockReturnValue({ replace });
+  usePathname.mockReturnValue("/");
+
+  render(
+    <AppLayout>
+      <div>child</div>
+    </AppLayout>
+  );
+
+  expect(replace).toHaveBeenCalledWith("/login");
+});
+
+test("renders navigation, tasks badge, chatbot and sign out for receptionist", () => {
+  const logout = jest.fn();
+  useRole.mockReturnValue({ user: { name: "Jay" }, role: "receptionist", logout });
+  usePathname.mockReturnValue("/patients");
+  useRouter.mockReturnValue({ replace: jest.fn() });
+  useTasks.mockReturnValue({
+    tasks: [{ id: "t1", completed: false }, { id: "t2", completed: true }],
+  });
+
+  render(
+    <AppLayout>
+      <div>children</div>
+    </AppLayout>
+  );
+
+  expect(screen.getByText(/Signed in as Jay \(receptionist\)/i)).toBeInTheDocument();
+
+  // receptionist should see patient create link and appointments create link
+  expect(screen.getAllByText("Create new").length).toBeGreaterThanOrEqual(1);
+  // tasks badge should show open count = 1
+  expect(screen.getByText("1")).toBeInTheDocument();
+  // chatbot rendered
+  expect(screen.getByTestId("chatbot")).toBeInTheDocument();
+
+  // sign out calls logout
+  const signOut = screen.getByRole("button", { name: /Sign out/i });
+  fireEvent.click(signOut);
+  expect(logout).toHaveBeenCalled();
+});
+
+test("officeManager sees Admin and Analytics links and tasks badge; chatbot hidden", () => {
+  useRole.mockReturnValue({ user: { name: "Manager" }, role: "officeManager", logout: jest.fn() });
+  usePathname.mockReturnValue("/admin");
+  useRouter.mockReturnValue({ replace: jest.fn() });
+  useTasks.mockReturnValue({
+    tasks: [{ id: "a", completed: false }, { id: "b", completed: false }],
+  });
+
+  render(
+    <AppLayout>
+      <div>content</div>
+    </AppLayout>
+  );
+
+  expect(screen.getByText("Admin")).toBeInTheDocument();
+  expect(screen.getByText("Analytics")).toBeInTheDocument();
+  // tasks badge shows 2 open tasks
+  expect(screen.getByText("2")).toBeInTheDocument();
+  // chatbot should not render for officeManager
+  expect(screen.queryByTestId("chatbot")).not.toBeInTheDocument();
+});

@@ -1,0 +1,158 @@
+import React from "react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  cleanup,
+} from "@testing-library/react";
+import "@testing-library/jest-dom";
+import NewPatientPage from "./page";
+
+// mock useRole
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+
+// mock next/router useRouter
+jest.mock("next/navigation", () => ({ useRouter: jest.fn() }));
+const { useRouter } = require("next/navigation") as { useRouter: jest.Mock };
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+// helper: find the input/textarea/select that follows a label text (labels are plain <label> elements)
+function getControlByLabel(labelText: string) {
+  const label = screen.getByText(labelText);
+  const container = label.closest("div") || label.parentElement;
+  if (!container) throw new Error(`Label container for "${labelText}" not found`);
+  const control = container.querySelector("input, textarea, select, button");
+  if (!control) throw new Error(`Control for label "${labelText}" not found`);
+  return control as HTMLElement;
+}
+
+test("shows access denied when not a receptionist", () => {
+  useRole.mockReturnValue({ role: "doctor" });
+  render(<NewPatientPage />);
+  expect(screen.getByText(/Only receptionists can create patient records/i)).toBeInTheDocument();
+});
+
+test("shows validation errors for required fields", async () => {
+  useRole.mockReturnValue({ role: "receptionist" });
+  render(<NewPatientPage />);
+
+  const submitBtn = screen.getByRole("button", { name: /Save patient/i });
+  fireEvent.click(submitBtn);
+
+  // zod validation messages should appear
+  await waitFor(() => {
+    expect(screen.getByText("First name is required")).toBeInTheDocument();
+    expect(screen.getByText("Last name is required")).toBeInTheDocument();
+  });
+
+  // no network call should have been made
+  expect((global as any).fetch).toBeUndefined();
+});
+
+test("phone input normalizes 'n/a' and pretty-formats digits while typing", async () => {
+  useRole.mockReturnValue({ role: "receptionist" });
+  render(<NewPatientPage />);
+
+  const phoneInput = getControlByLabel("Phone") as HTMLInputElement;
+
+  // type N/A variations -> should normalize to "N/A"
+  fireEvent.change(phoneInput, { target: { value: "n/a" } });
+  expect(phoneInput.value).toBe("N/A");
+
+  // digits formatting
+  fireEvent.change(phoneInput, { target: { value: "1234567890" } });
+  // formatted as (123) 456 - 7890 per implementation
+  expect(phoneInput.value).toBe("(123) 456 - 7890");
+});
+
+test("successful submit POSTs normalized payload and navigates", async () => {
+  useRole.mockReturnValue({ role: "receptionist" });
+
+  const push = jest.fn();
+  useRouter.mockReturnValue({ push });
+
+  const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/patients") && init?.method === "POST") {
+      return { ok: true, status: 200, json: async () => ({ id: "p1" }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  });
+  (global as any).fetch = fetchMock;
+
+  render(<NewPatientPage />);
+
+  // fill required fields
+  const firstNameInput = getControlByLabel("First name") as HTMLInputElement;
+  const lastNameInput = getControlByLabel("Last name") as HTMLInputElement;
+  const phoneInput = getControlByLabel("Phone") as HTMLInputElement;
+  const emailInput = getControlByLabel("Email (optional)") as HTMLInputElement;
+
+  fireEvent.change(firstNameInput, { target: { value: "Alice" } });
+  fireEvent.change(lastNameInput, { target: { value: "Smith" } });
+  // enter raw digits; component will pretty-format before sending
+  fireEvent.change(phoneInput, { target: { value: "9876543210" } });
+  fireEvent.change(emailInput, { target: { value: "alice@example.com" } });
+
+  const submitBtn = screen.getByRole("button", { name: /Save patient/i });
+  fireEvent.click(submitBtn);
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/patients"),
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      })
+    )
+  );
+
+  // assert posted body contains normalized/pretty phone and fields
+  const lastCall = fetchMock.mock.calls[0];
+  const body = JSON.parse((lastCall[1] as RequestInit).body as string);
+  expect(body.firstName).toBe("Alice");
+  expect(body.lastName).toBe("Smith");
+  // phone must be pretty-formatted (implementation uses (xxx) xxx - xxxx)
+  expect(body.phone).toBe("(987) 654 - 3210");
+  expect(body.email).toBe("alice@example.com");
+
+  // navigation happened
+  await waitFor(() => expect(push).toHaveBeenCalledWith("/patients"));
+});
+
+test("shows server error when POST fails", async () => {
+  useRole.mockReturnValue({ role: "receptionist" });
+
+  const push = jest.fn();
+  useRouter.mockReturnValue({ push });
+
+  const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/patients") && init?.method === "POST") {
+      return { ok: false, status: 500, json: async () => ({ error: "oops" }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  });
+  (global as any).fetch = fetchMock;
+
+  render(<NewPatientPage />);
+
+  // fill required fields minimally
+  fireEvent.change(getControlByLabel("First name") as HTMLInputElement, { target: { value: "Bob" } });
+  fireEvent.change(getControlByLabel("Last name") as HTMLInputElement, { target: { value: "Jones" } });
+
+  fireEvent.click(screen.getByRole("button", { name: /Save patient/i }));
+
+  await waitFor(() => expect(screen.getByText(/oops/i)).toBeInTheDocument());
+  expect(push).not.toHaveBeenCalled();
+});

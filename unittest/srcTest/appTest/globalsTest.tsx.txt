@@ -1,0 +1,22 @@
+import fs from "fs";
+import path from "path";
+
+const cssPath = path.resolve(__dirname, "globals.css");
+
+test("globals.css contains core tokens and selectors", () => {
+  const css = fs.readFileSync(cssPath, "utf8");
+
+  // basic structure & tokens
+  expect(css).toMatch(/@import\s+["']tailwindcss["']/);
+  expect(css).toMatch(/:root\s*{/);
+  expect(css).toMatch(/--background\s*:/);
+  expect(css).toMatch(/--foreground\s*:/);
+
+  // theme attribute selector and dark media query
+  expect(css).toMatch(/\[data-theme=["']inline["']\]\s*{/);
+  expect(css).toMatch(/@media\s*\(\s*prefers-color-scheme:\s*dark\s*\)\s*{/);
+
+  // body rules and autofill vendor selector
+  expect(css).toMatch(/body\s*{/);
+  expect(css).toMatch(/input:-webkit-autofill/);
+});

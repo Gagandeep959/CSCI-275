@@ -1,0 +1,97 @@
+import React from "react";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import PatientsPage from "./page";
+
+// mock useRole
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+test("shows loading then 'No patients found yet.' when API returns empty list", async () => {
+  useRole.mockReturnValue({ role: "doctor" });
+  (global as any).fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    json: async () => [],
+  });
+
+  render(<PatientsPage />);
+
+  // initial loading UI
+  expect(screen.getByText("Loading patients…")).toBeInTheDocument();
+
+  // after fetch completes show empty message
+  await waitFor(() => expect(screen.getByText("No patients found yet.")).toBeInTheDocument());
+});
+
+test("normalizes patient records and displays them in the table", async () => {
+  useRole.mockReturnValue({ role: "doctor" });
+
+  const rawPatients = [
+    {
+      id: "p1",
+      firstName: "Alice",
+      lastName: "Smith",
+      phone: "  (123)456-7890 ",
+      email: " alice@example.com ",
+      notes: "Short note",
+    },
+    {
+      id: "p2",
+      // missing names -> should display (no name)
+      dateOfBirth: "1980-01-01",
+      notes: "A".repeat(100),
+    },
+  ];
+
+  (global as any).fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    json: async () => rawPatients,
+  });
+
+  render(<PatientsPage />);
+
+  // wait for table rows
+  await waitFor(() => expect(screen.getByText("Alice Smith")).toBeInTheDocument());
+
+  // phone/email trimmed
+  expect(screen.getByText("(123)456-7890")).toBeInTheDocument();
+  expect(screen.getByText("alice@example.com")).toBeInTheDocument();
+
+  // second row shows "(no name)"
+  expect(screen.getByText("(no name)")).toBeInTheDocument();
+
+  // long notes truncated to <= 60 chars and ends with ellipsis
+  const truncated = rawPatients[1].notes.slice(0, 60) + "…";
+  expect(screen.getByText(truncated)).toBeInTheDocument();
+});
+
+test("shows 'Create new patient' link only for receptionists", async () => {
+  // receptionist sees link
+  useRole.mockReturnValue({ role: "receptionist" });
+  (global as any).fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => [] });
+
+  render(<PatientsPage />);
+  await waitFor(() => expect(screen.getByText("No patients found yet.")).toBeInTheDocument());
+
+  const createLink = screen.getByRole("link", { name: /Create new patient/i });
+  expect(createLink).toBeInTheDocument();
+  expect(createLink).toHaveAttribute("href", "/patients/new");
+
+  // non-receptionist does not see link
+  cleanup();
+  useRole.mockReturnValue({ role: "doctor" });
+  (global as any).fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => [] });
+
+  render(<PatientsPage />);
+  await waitFor(() => expect(screen.getByText("No patients found yet.")).toBeInTheDocument());
+  expect(screen.queryByRole("link", { name: /Create new patient/i })).not.toBeInTheDocument();
+});

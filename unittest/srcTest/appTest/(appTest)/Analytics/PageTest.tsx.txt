@@ -1,0 +1,100 @@
+import React from "react";
+import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import AnalyticsPage from "./page";
+
+// mock useRole
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+
+// sample API response
+const sampleResponse = {
+  range: { start: "2025-01-01", end: "2025-01-07" },
+  timely: {
+    totalPerDay: { "2025-01-01": 2, "2025-01-02": 3 },
+    cancelledPerDay: { "2025-01-01": 1, "2025-01-02": 0 },
+    perRoom: { R1: 3 },
+    totalCancelled: 1,
+    totalRescheduled: 0,
+  },
+  staff: {
+    doctors: [{ doctorId: "DrA", total: 5, cancelled: 1 }],
+    appointmentsCreatedByReception: { Rec1: 2 },
+    tasks: {
+      createdByDoctor: { DrA: 1 },
+      createdByReception: { Rec1: 1 },
+      completedByDoctor: { DrA: 0 },
+      completedByReception: { Rec1: 0 },
+    },
+  },
+};
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+test("shows access denied when not officeManager", () => {
+  useRole.mockReturnValue({ role: "doctor" });
+  render(<AnalyticsPage />);
+  expect(screen.getByText(/You don't have access to Analytics/i)).toBeInTheDocument();
+});
+
+test("fetches analytics and renders timely view charts and stats for officeManager", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+
+  const fetchMock = jest.fn().mockResolvedValue({
+    ok: true,
+    json: async () => sampleResponse,
+    text: async () => JSON.stringify(sampleResponse),
+  });
+  (global as any).fetch = fetchMock;
+
+  render(<AnalyticsPage />);
+
+  // initial fetch should be called
+  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  expect(fetchMock.mock.calls[0][0]).toMatch(/^\/api\/analytics\?/);
+
+  // day labels from totalPerDay should appear (rendered by DualLineChart)
+  await waitFor(() => expect(screen.getByText("2025-01-01")).toBeInTheDocument());
+  expect(screen.getByText("2025-01-02")).toBeInTheDocument();
+
+  // Stat cards should render aggregated numbers (total appointments = 2+3 = 5)
+  // find the StatCard title then ensure the numeric value is present nearby
+  const totalLabel = screen.getByText(/Total appointments/i);
+  expect(totalLabel).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("5")).toBeInTheDocument());
+});
+
+test("switches tabs to staff view and refresh triggers another fetch", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+
+  const fetchMock = jest.fn().mockResolvedValue({
+    ok: true,
+    json: async () => sampleResponse,
+    text: async () => JSON.stringify(sampleResponse),
+  });
+  (global as any).fetch = fetchMock;
+
+  render(<AnalyticsPage />);
+
+  // wait initial load
+  await waitFor(() => expect(screen.getByText("2025-01-01")).toBeInTheDocument());
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+
+  // switch to Staff view
+  fireEvent.click(screen.getByRole("button", { name: /Staff view/i }));
+  await waitFor(() => expect(screen.getByText(/Doctor appointments/i)).toBeInTheDocument());
+
+  // doctor id from sample should show up
+  expect(screen.getByText("DrA")).toBeInTheDocument();
+
+  // click Refresh to trigger another fetch
+  fireEvent.click(screen.getByRole("button", { name: /Refresh/i }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+});

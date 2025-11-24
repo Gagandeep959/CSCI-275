@@ -1,0 +1,127 @@
+import React from "react";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import NewTaskPage from "./page";
+
+// mock useRole
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+
+// mock next/router useRouter
+jest.mock("next/navigation", () => ({ useRouter: jest.fn() }));
+const { useRouter } = require("next/navigation") as { useRouter: jest.Mock };
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+// helper to find an input/select/textarea next to a label text (labels are not linked via htmlFor)
+function getControlByLabel(labelText: string) {
+  const label = screen.getByText(labelText);
+  const container = label.closest("div") || label.parentElement;
+  if (!container) throw new Error(`Label container for "${labelText}" not found`);
+  const control = container.querySelector("input, textarea, select, button");
+  if (!control) throw new Error(`Control for label "${labelText}" not found`);
+  return control as HTMLElement;
+}
+
+test("shows permission message when role cannot create tasks", () => {
+  useRole.mockReturnValue({ role: "receptionist", user: null });
+  render(<NewTaskPage />);
+  expect(screen.getByText(/Only doctors and office managers can create tasks\./i)).toBeInTheDocument();
+});
+
+test("shows validation error when required fields missing", async () => {
+  useRole.mockReturnValue({ role: "doctor", user: { id: "u1", name: "Dr Test" } });
+  render(<NewTaskPage />);
+
+  const submitBtn = screen.getByRole("button", { name: /Create task/i });
+  fireEvent.click(submitBtn);
+
+  await waitFor(() =>
+    expect(screen.getByText("Title, description and due date are required.")).toBeInTheDocument()
+  );
+});
+
+test("submits form and navigates on successful create", async () => {
+  const push = jest.fn();
+  useRouter.mockReturnValue({ push });
+  useRole.mockReturnValue({ role: "doctor", user: { id: "u1", name: "Dr Test" } });
+
+  const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/tasks") && init?.method === "POST") {
+      return { ok: true, status: 200, json: async () => ({ id: "t1" }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  });
+  (global as any).fetch = fetchMock;
+
+  render(<NewTaskPage />);
+
+  // fill fields
+  const titleInput = getControlByLabel("Title") as HTMLInputElement;
+  const descTextarea = getControlByLabel("Description") as HTMLTextAreaElement;
+  const dateInput = getControlByLabel("Deadline") as HTMLInputElement;
+
+  fireEvent.change(titleInput, { target: { value: "Test task" } });
+  fireEvent.change(descTextarea, { target: { value: "Do something important" } });
+  fireEvent.change(dateInput, { target: { value: "2025-12-01" } });
+
+  // submit
+  fireEvent.click(screen.getByRole("button", { name: /Create task/i }));
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/tasks"),
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      })
+    )
+  );
+
+  // verify payload contains trimmed fields and user info
+  const lastCall = fetchMock.mock.calls[0];
+  const body = JSON.parse((lastCall[1] as RequestInit).body as string);
+  expect(body.title).toBe("Test task");
+  expect(body.description).toBe("Do something important");
+  expect(body.dueDate).toBe("2025-12-01");
+  expect(body.createdByUserId).toBe("u1");
+  expect(body.createdByName).toBe("Dr Test");
+
+  // navigated to /tasks
+  await waitFor(() => expect(push).toHaveBeenCalledWith("/tasks"));
+});
+
+test("displays server error message when POST fails", async () => {
+  const push = jest.fn();
+  useRouter.mockReturnValue({ push });
+  useRole.mockReturnValue({ role: "doctor", user: { id: "u1", name: "Dr Test" } });
+
+  const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/tasks") && init?.method === "POST") {
+      return { ok: false, status: 500, json: async () => ({ error: "server error" }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  });
+  (global as any).fetch = fetchMock;
+
+  render(<NewTaskPage />);
+
+  // fill required fields
+  fireEvent.change(getControlByLabel("Title") as HTMLInputElement, { target: { value: "T" } });
+  fireEvent.change(getControlByLabel("Description") as HTMLTextAreaElement, { target: { value: "D" } });
+  fireEvent.change(getControlByLabel("Deadline") as HTMLInputElement, { target: { value: "2025-12-01" } });
+
+  fireEvent.click(screen.getByRole("button", { name: /Create task/i }));
+
+  await waitFor(() => expect(screen.getByText(/server error/i)).toBeInTheDocument());
+  expect(push).not.toHaveBeenCalled();
+});

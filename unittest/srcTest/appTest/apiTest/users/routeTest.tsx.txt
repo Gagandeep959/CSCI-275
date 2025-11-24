@@ -1,0 +1,92 @@
+import { GET, POST } from "./route";
+
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/User", () => ({ User: { find: jest.fn(), create: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { User } = require("@/models/User");
+
+function makeLeanResolve(data: any) {
+  return { lean: jest.fn().mockResolvedValue(data) };
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("GET returns mapped users list", async () => {
+  const docs = [
+    { _id: "u1", name: "Alice", email: "a@example.com", role: "receptionist", employeeId: "E1" },
+    { _id: "u2", name: undefined, email: "bob@example.com", role: "doctor" }, // no employeeId
+  ];
+  User.find.mockReturnValueOnce(makeLeanResolve(docs));
+
+  const res: any = await GET();
+  expect(dbConnect).toHaveBeenCalled();
+  expect(User.find).toHaveBeenCalledWith({}, { name: 1, email: 1, role: 1, employeeId: 1 });
+
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(Array.isArray(body)).toBe(true);
+  expect(body[0]).toEqual({
+    id: "u1",
+    name: "Alice",
+    email: "a@example.com",
+    role: "receptionist",
+    employeeId: "E1",
+  });
+  expect(body[1]).toEqual({
+    id: "u2",
+    name: "bob@example.com",
+    email: "bob@example.com",
+    role: "doctor",
+    employeeId: null,
+  });
+});
+
+test("GET returns 500 on internal error", async () => {
+  const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+  User.find.mockImplementationOnce(() => { throw new Error("boom"); });
+
+  const res: any = await GET();
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to load users" });
+
+  spy.mockRestore();
+});
+
+test("POST creates a user and returns 201 with mapped body", async () => {
+  const created = { _id: "newid", name: "Cathy", email: "c@example.com", role: "officeManager", employeeId: undefined };
+  (User.create as jest.Mock).mockResolvedValueOnce(created);
+
+  const req = { json: async () => ({ name: "Cathy", email: "c@example.com", role: "officeManager" }) } as any;
+  const res: any = await POST(req);
+
+  expect(dbConnect).toHaveBeenCalled();
+  expect(User.create).toHaveBeenCalledWith({ name: "Cathy", email: "c@example.com", role: "officeManager" });
+
+  expect(res.status).toBe(201);
+  const body = await res.json();
+  expect(body).toEqual({
+    id: "newid",
+    name: "Cathy",
+    email: "c@example.com",
+    role: "officeManager",
+    employeeId: null,
+  });
+});
+
+test("POST returns 500 on internal error", async () => {
+  const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+  (User.create as jest.Mock).mockImplementationOnce(() => { throw new Error("create fail"); });
+
+  const req = { json: async () => ({ name: "X", email: "x@example.com", role: "doctor" }) } as any;
+  const res: any = await POST(req);
+
+  expect(res.status).toBe(500);
+  const body = await res.json();
+  expect(body).toEqual({ error: "Failed to create user" });
+
+  spy.mockRestore();
+});

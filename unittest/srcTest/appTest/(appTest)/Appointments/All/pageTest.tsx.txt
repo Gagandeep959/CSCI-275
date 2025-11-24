@@ -1,0 +1,185 @@
+import React from "react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  cleanup,
+} from "@testing-library/react";
+import "@testing-library/jest-dom";
+import AppointmentsAllPage from "./page";
+
+// mock useRole
+jest.mock("@/context/RoleContext", () => ({ useRole: jest.fn() }));
+const { useRole } = require("@/context/RoleContext") as { useRole: jest.Mock };
+
+// sample data
+const sampleAppointments = [
+  {
+    id: "a1",
+    date: "2025-12-01",
+    time: "09:00",
+    doctorId: "d1",
+    roomId: "r1",
+    patientName: "Alice",
+    notes: "Checkup",
+    status: "scheduled",
+  },
+];
+
+const sampleDoctors = [{ id: "d1", name: "Dr One", email: "dr1@example.com" }];
+const sampleRooms = [{ id: "r1", name: "Room 1", code: "R-101" }];
+
+function makeFetchMock() {
+  return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init && init.method) || "GET";
+
+    if (url.endsWith("/api/appointments") && method === "GET") {
+      return {
+        ok: true,
+        json: async () => sampleAppointments,
+      };
+    }
+    if (url.endsWith("/api/doctors") && method === "GET") {
+      return { ok: true, json: async () => sampleDoctors };
+    }
+    if (url.endsWith("/api/rooms") && method === "GET") {
+      return { ok: true, json: async () => sampleRooms };
+    }
+
+    // PATCH cancel
+    if (url.endsWith("/api/appointments/a1") && method === "PATCH") {
+      return { ok: true, json: async () => ({}) };
+    }
+    // DELETE
+    if (url.endsWith("/api/appointments/a1") && method === "DELETE") {
+      return { ok: true, json: async () => ({}) };
+    }
+
+    return { ok: false, statusText: "not found", json: async () => ({}) };
+  });
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+test("renders appointments list and maps doctor & room names", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+  (global as any).fetch = makeFetchMock();
+
+  render(<AppointmentsAllPage />);
+
+  // wait for appointment row to appear
+  await waitFor(() => expect(screen.getByText("Alice")).toBeInTheDocument());
+
+  // verify columns map correctly
+  expect(screen.getByText("2025-12-01")).toBeInTheDocument();
+  expect(screen.getByText("09:00")).toBeInTheDocument();
+  expect(screen.getByText("Dr One")).toBeInTheDocument();
+  expect(screen.getByText("Room 1")).toBeInTheDocument();
+  expect(screen.getByText("Checkup")).toBeInTheDocument();
+});
+
+test("filters appointments by patient name", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+  (global as any).fetch = makeFetchMock();
+
+  render(<AppointmentsAllPage />);
+
+  await waitFor(() => expect(screen.getByText("Alice")).toBeInTheDocument());
+
+  const input = screen.getByPlaceholderText("Search by patient name") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "ali" } });
+  expect(input.value).toBe("ali");
+  expect(screen.getByText("Alice")).toBeInTheDocument();
+
+  // non-matching query
+  fireEvent.change(input, { target: { value: "bob" } });
+  await waitFor(() => expect(screen.queryByText("Alice")).not.toBeInTheDocument());
+});
+
+test("cancel and delete call the correct APIs", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+  const fetchMock = makeFetchMock();
+  (global as any).fetch = fetchMock;
+
+  render(<AppointmentsAllPage />);
+
+  await waitFor(() => expect(screen.getByText("Alice")).toBeInTheDocument());
+
+  // Cancel button
+  const cancelButton = screen.getByRole("button", { name: /Cancel/i });
+  fireEvent.click(cancelButton);
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/appointments/a1"),
+      expect.objectContaining({ method: "PATCH" })
+    )
+  );
+
+  // Delete button
+  const deleteButton = screen.getByRole("button", { name: /Delete/i });
+  fireEvent.click(deleteButton);
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/appointments/a1"),
+      expect.objectContaining({ method: "DELETE" })
+    )
+  );
+});
+
+test("opens ICS modal and triggers download", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+  (global as any).fetch = makeFetchMock();
+
+  render(<AppointmentsAllPage />);
+
+  await waitFor(() => expect(screen.getByText("Alice")).toBeInTheDocument());
+
+  // open modal
+  fireEvent.click(screen.getByRole("button", { name: /Export \.ics/i }));
+  await waitFor(() => expect(screen.getByText(/Export appointments \(\.ics\)/i)).toBeInTheDocument());
+
+  // ensure Download button is enabled (icsDoctorId and dates set by effect)
+  const downloadButton = screen.getByRole("button", { name: /Download \.ics/i }) as HTMLButtonElement;
+  expect(downloadButton).toBeInTheDocument();
+
+  // spy on URL.createObjectURL and document body append/remove to avoid actual download
+  const createObjectURLSpy = jest.spyOn(URL, "createObjectURL").mockReturnValue("blob:url");
+  const originalCreateElement = document.createElement;
+  const clickMock = jest.fn();
+  const removeMock = jest.fn();
+  jest.spyOn(document, "createElement").mockImplementation((tagName: any) => {
+    if (tagName === "a") {
+      return { href: "", download: "", click: clickMock, remove: removeMock } as any;
+    }
+    return originalCreateElement.call(document, tagName);
+  });
+  const appendSpy = jest.spyOn(document.body, "appendChild").mockImplementation(() => null);
+  const revokeSpy = jest.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+  // click download
+  fireEvent.click(downloadButton);
+
+  await waitFor(() => expect(createObjectURLSpy).toHaveBeenCalled());
+  expect(appendSpy).toHaveBeenCalled();
+  expect(clickMock).toHaveBeenCalled();
+
+  // modal should close
+  await waitFor(() => expect(screen.queryByText(/Export appointments \(\.ics\)/i)).not.toBeInTheDocument());
+
+  // restore spies
+  (document.createElement as jest.Mock).mockRestore?.();
+  createObjectURLSpy.mockRestore();
+  appendSpy.mockRestore();
+  revokeSpy.mockRestore();
+});

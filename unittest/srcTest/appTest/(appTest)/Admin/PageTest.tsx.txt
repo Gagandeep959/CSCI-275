@@ -1,0 +1,216 @@
+import React from "react";
+import {
+  render,
+  screen,
+  waitFor,
+  cleanup,
+  fireEvent,
+} from "@testing-library/react";
+import "@testing-library/jest-dom";
+import AdminPage from "./page";
+
+// mock useRole
+jest.mock("@/context/RoleContext", () => ({
+  useRole: jest.fn(),
+}));
+const { useRole } = require("@/context/RoleContext") as {
+  useRole: jest.Mock;
+};
+
+const sampleUsers = [
+  {
+    id: "u1",
+    name: "Jay",
+    email: "reception@example.com",
+    role: "receptionist",
+    employeeId: "REC-2001",
+  },
+  {
+    id: "u2",
+    name: "Mazda",
+    email: "manager@example.com",
+    role: "officeManager",
+    employeeId: "MGR-1001",
+  },
+];
+
+const sampleDoctors = [
+  { id: "d1", name: "Dr. Fred", email: "doctor@example.com" },
+];
+
+const sampleRooms = [
+  { id: "r1", name: "Exam Room 1", code: "R-101" },
+];
+
+function makeFetchMock() {
+  return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init && init.method) || "GET";
+
+    // GETs
+    if (url.endsWith("/api/users") && method === "GET") {
+      return {
+        ok: true,
+        json: async () => sampleUsers,
+        text: async () => JSON.stringify(sampleUsers),
+        statusText: "",
+      };
+    }
+    if (url.endsWith("/api/doctors") && method === "GET") {
+      return {
+        ok: true,
+        json: async () => sampleDoctors,
+        text: async () => JSON.stringify(sampleDoctors),
+        statusText: "",
+      };
+    }
+    if (url.endsWith("/api/rooms") && method === "GET") {
+      return {
+        ok: true,
+        json: async () => sampleRooms,
+        text: async () => JSON.stringify(sampleRooms),
+        statusText: "",
+      };
+    }
+
+    // POST create receptionist
+    if (url.endsWith("/api/users") && method === "POST") {
+      const body = init && init.body ? JSON.parse(String(init.body)) : {};
+      const created = {
+        id: "new-u",
+        employeeId: "REC-2002",
+        ...body,
+      };
+      return {
+        ok: true,
+        json: async () => created,
+        text: async () => JSON.stringify(created),
+        statusText: "",
+      };
+    }
+
+    // POST create doctor
+    if (url.endsWith("/api/doctors") && method === "POST") {
+      const body = init && init.body ? JSON.parse(String(init.body)) : {};
+      const created = { id: "new-d", ...body };
+      return {
+        ok: true,
+        json: async () => created,
+        text: async () => JSON.stringify(created),
+        statusText: "",
+      };
+    }
+
+    // POST create room
+    if (url.endsWith("/api/rooms") && method === "POST") {
+      const body = init && init.body ? JSON.parse(String(init.body)) : {};
+      const created = { id: "new-r", ...body };
+      return {
+        ok: true,
+        json: async () => created,
+        text: async () => JSON.stringify(created),
+        statusText: "",
+      };
+    }
+
+    // DELETE endpoints (return ok)
+    if (url.match(/\/api\/users\/.+$/) && method === "DELETE") {
+      return { ok: true, json: async () => ({}), text: async () => "", statusText: "" };
+    }
+    if (url.match(/\/api\/doctors\/.+$/) && method === "DELETE") {
+      return { ok: true, json: async () => ({}), text: async () => "", statusText: "" };
+    }
+    if (url.match(/\/api\/rooms\/.+$/) && method === "DELETE") {
+      return { ok: true, json: async () => ({}), text: async () => "", statusText: "" };
+    }
+
+    // fallback
+    return { ok: false, statusText: "not found", text: async () => "not found" };
+  });
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+  cleanup();
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
+
+test("shows loading / permission states", async () => {
+  useRole.mockReturnValue({ role: null });
+  render(<AdminPage />);
+  expect(screen.getByText("Loading…")).toBeInTheDocument();
+
+  useRole.mockReturnValue({ role: "doctor" });
+  // re-render for new role
+  cleanup();
+  render(<AdminPage />);
+  expect(screen.getByText("You do not have permission to view this page.")).toBeInTheDocument();
+});
+
+test("loads and displays receptionists, doctors and rooms for officeManager", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+  (global as any).fetch = makeFetchMock();
+
+  render(<AdminPage />);
+
+  // Wait for receptionist to appear
+  await waitFor(() => expect(screen.getByText("Additional receptionists (real staff)")).toBeInTheDocument());
+  expect(screen.getByText("Jay")).toBeInTheDocument();
+  expect(screen.getByText("reception@example.com")).toBeInTheDocument();
+
+  // Doctors
+  expect(screen.getByText("Doctors")).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("Dr. Fred")).toBeInTheDocument());
+  expect(screen.getByText("doctor@example.com")).toBeInTheDocument();
+
+  // Rooms
+  expect(screen.getByText("Rooms")).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("Exam Room 1")).toBeInTheDocument());
+  expect(screen.getByText("R-101")).toBeInTheDocument();
+});
+
+test("creates a new receptionist", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+  (global as any).fetch = makeFetchMock();
+
+  render(<AdminPage />);
+
+  // wait for initial load complete
+  await waitFor(() => expect(screen.getByText("Jay")).toBeInTheDocument());
+
+  // fill and submit receptionist form
+  fireEvent.change(screen.getByPlaceholderText("e.g. New receptionist"), { target: { value: "New Rec" } });
+  fireEvent.change(screen.getByPlaceholderText("name@clinic.com"), { target: { value: "newrec@example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: /Create receptionist/i }));
+
+  // the created receptionist should appear
+  await waitFor(() => expect(screen.getByText("New Rec")).toBeInTheDocument());
+  expect(screen.getByText("newrec@example.com")).toBeInTheDocument();
+});
+
+test("removes a receptionist when confirmed", async () => {
+  useRole.mockReturnValue({ role: "officeManager" });
+  (global as any).fetch = makeFetchMock();
+
+  // mock confirm to accept removal
+  const confirmSpy = jest.spyOn(window, "confirm").mockImplementation(() => true);
+
+  render(<AdminPage />);
+  await waitFor(() => expect(screen.getByText("Jay")).toBeInTheDocument());
+
+  // click the first Remove button for receptionists
+  const removeButtons = screen.getAllByRole("button", { name: /Remove/i });
+  // There are Remove buttons for doctors/rooms too; find by locating the row with Jay then the button in that row
+  const jayRow = screen.getByText("Jay").closest("tr");
+  const jayRemove = jayRow?.querySelector("button");
+  expect(jayRemove).toBeTruthy();
+  fireEvent.click(jayRemove!);
+
+  // after delete, Jay should no longer be present
+  await waitFor(() => expect(screen.queryByText("Jay")).not.toBeInTheDocument());
+
+  confirmSpy.mockRestore();
+});

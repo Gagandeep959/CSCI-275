@@ -1,0 +1,109 @@
+import { GET } from "./route";
+
+// mock db and models
+jest.mock("@/lib/db", () => ({ dbConnect: jest.fn() }));
+jest.mock("@/models/Appointment", () => ({ Appointment: { find: jest.fn() } }));
+jest.mock("@/models/Task", () => ({ Task: { find: jest.fn() } }));
+jest.mock("@/models/User", () => ({ User: { find: jest.fn() } }));
+
+const { dbConnect } = require("@/lib/db");
+const { Appointment } = require("@/models/Appointment");
+const { Task } = require("@/models/Task");
+const { User } = require("@/models/User");
+
+function makeLeanResolve(data: any) {
+  return { lean: jest.fn().mockResolvedValue(data) };
+}
+
+beforeEach(() => {
+  jest.resetAllMocks();
+});
+
+test("returns 400 when start/end are invalid", async () => {
+  const req = { url: "http://localhost/api/analytics?start=bad&end=also-bad" } as any;
+  const res = await GET(req);
+  expect(res.status).toBe(400);
+  const body = await (res as any).json();
+  expect(body).toHaveProperty("error", "Provide start and end as YYYY-MM-DD.");
+});
+
+test("returns 400 when date range > 31 days", async () => {
+  const req = {
+    url: "http://localhost/api/analytics?start=2025-01-01&end=2025-02-15",
+  } as any;
+  const res = await GET(req);
+  expect(res.status).toBe(400);
+  const body = await (res as any).json();
+  expect(body).toHaveProperty("error", "Date range too large. Max 31 days.");
+});
+
+test("computes analytics correctly", async () => {
+  // sample appointments
+  const appts = [
+    { _id: "a1", date: "2025-01-01", time: "09:00", doctorId: "doc1", roomId: "R1", status: "scheduled", createdByEmployeeId: "empR" },
+    { _id: "a2", date: "2025-01-02", time: "10:00", doctorId: "doc1", roomId: "R2", status: "cancelled", createdByEmployeeId: "empX" },
+    { _id: "a3", date: "2025-01-01", time: "11:00", doctorId: "doc2", roomId: "R1", status: "scheduled", createdByEmployeeId: "empR" },
+  ];
+
+  // sample tasks
+  const tasks = [
+    { _id: "t1", title: "sys-reschedule", createdBy: "system", createdByRole: undefined, completed: false },
+    { _id: "t2", title: "doc-task", createdBy: "Dr A", createdByRole: "doctor", completed: true, completedByEmployeeId: "empD", createdAt: new Date("2025-01-01T00:00:00Z") },
+  ];
+
+  // sample users
+  const users = [
+    { _id: "uR", employeeId: "empR", role: "receptionist", name: "Receptionist One", email: "r1@example.com" },
+    { _id: "uD", employeeId: "empD", role: "doctor", name: "Doctor A", email: "d@example.com" },
+    { _id: "uX", employeeId: "empX", role: "officeManager", name: "Manager X", email: "m@example.com" },
+  ];
+
+  Appointment.find.mockReturnValueOnce(makeLeanResolve(appts));
+  Task.find.mockReturnValueOnce(makeLeanResolve(tasks));
+  User.find.mockReturnValueOnce(makeLeanResolve(users));
+
+  const req = { url: "http://localhost/api/analytics?start=2025-01-01&end=2025-01-02" } as any;
+  const res = await GET(req);
+
+  expect(res.status).toBe(200);
+  const body = await (res as any).json();
+
+  expect(body.range).toEqual({ start: "2025-01-01", end: "2025-01-02" });
+
+  // timely totals
+  expect(body.timely.totalPerDay["2025-01-01"]).toBe(2);
+  expect(body.timely.totalPerDay["2025-01-02"]).toBe(1);
+  expect(body.timely.cancelledPerDay["2025-01-02"]).toBe(1);
+  expect(body.timely.totalCancelled).toBe(1);
+  expect(body.timely.perRoom["R1"]).toBe(2);
+  expect(body.timely.perRoom["R2"]).toBe(1);
+  expect(body.timely.totalRescheduled).toBe(1);
+
+  // staff / doctors aggregation
+  const doctors = body.staff.doctors;
+  const byId = Object.fromEntries(doctors.map((d: any) => [d.doctorId, d]));
+  expect(byId["doc1"].total).toBe(2);
+  expect(byId["doc1"].cancelled).toBe(1);
+  expect(byId["doc2"].total).toBe(1);
+
+  // appointments created by reception grouped by name
+  expect(body.staff.appointmentsCreatedByReception["Receptionist One"]).toBe(2);
+
+  // tasks created/completed by doctor
+  expect(body.staff.tasks.createdByDoctor["Dr A"]).toBe(1);
+  expect(body.staff.tasks.completedByDoctor["Doctor A"]).toBe(1);
+});
+
+test("returns 500 on internal exception", async () => {
+  Appointment.find.mockImplementationOnce(() => { throw new Error("db fail"); });
+  Task.find.mockReturnValueOnce(makeLeanResolve([]));
+  User.find.mockReturnValueOnce(makeLeanResolve([]));
+  (dbConnect as jest.Mock).mockImplementationOnce(() => Promise.resolve());
+
+  const req = { url: "http://localhost/api/analytics?start=2025-01-01&end=2025-01-02" } as any;
+  const res = await GET(req);
+
+  expect(res.status).toBe(500);
+  const body = await (res as any).json();
+  expect(body).toHaveProperty("error", "Failed to compute analytics");
+});

@@ -2,11 +2,6 @@
 import mongoose from "mongoose";
 
 const MONGODB_URI = process.env.MONGODB_URI;
-if (!MONGODB_URI) {
-  throw new Error(
-    "Please define the MONGODB_URI environment variable in .env.local"
-  );
-}
 
 declare global {
   // eslint-disable-next-line no-var
@@ -21,14 +16,17 @@ if (!global.__mongoose) {
 }
 
 export async function dbConnect(): Promise<typeof mongoose> {
-  const cached = global.__mongoose!;
-  if (cached.conn) {
-    return cached.conn;
+  if (!MONGODB_URI) {
+    throw new Error(
+      "Please define the MONGODB_URI environment variable in Vercel project settings"
+    );
   }
+
+  const cached = global.__mongoose!;
+  if (cached.conn) return cached.conn;
 
   if (!cached.promise) {
     cached.promise = mongoose.connect(MONGODB_URI, {
-      // add options here if needed
       serverSelectionTimeoutMS: 15000,
     }) as Promise<typeof mongoose>;
   }
